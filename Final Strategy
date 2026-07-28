@@ -1,0 +1,233 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+# =====================================================
+# Load Data
+# =====================================================
+
+df = pd.read_csv("Nifty 50 Historical Data.csv")
+
+# Convert Date (your CSV is DD-MM-YYYY)
+df["Date"] = pd.to_datetime(df["Date"], format="%d-%m-%Y")
+
+# Remove commas from price
+df["Price"] = (
+    df["Price"]
+    .astype(str)
+    .str.replace(",", "", regex=False)
+    .astype(float)
+)
+
+# Sort oldest -> newest
+df = df.sort_values("Date").reset_index(drop=True)
+
+close = df["Price"]
+
+# =====================================================
+# Calculate MACD
+# =====================================================
+
+ema12 = close.ewm(span=12, adjust=False).mean()
+ema26 = close.ewm(span=26, adjust=False).mean()
+
+df["MACD"] = ema12 - ema26
+df["Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
+
+# =====================================================
+# Calculate RSI (14)
+# =====================================================
+
+delta = close.diff()
+
+gain = delta.clip(lower=0)
+loss = -delta.clip(upper=0)
+
+avg_gain = gain.rolling(window=14).mean()
+avg_loss = loss.rolling(window=14).mean()
+
+rs = avg_gain / avg_loss
+
+df["RSI"] = 100 - (100 / (1 + rs))
+
+# =====================================================
+# Generate Trading Signals
+# =====================================================
+
+position = 0
+positions = []
+
+for i in range(len(df)):
+
+    if i == 0:
+        positions.append(0)
+        continue
+
+    macd_cross_up = (
+        df.loc[i-1, "MACD"] <= df.loc[i-1, "Signal"]
+        and
+        df.loc[i, "MACD"] > df.loc[i, "Signal"]
+    )
+
+    macd_cross_down = (
+        df.loc[i-1, "MACD"] >= df.loc[i-1, "Signal"]
+        and
+        df.loc[i, "MACD"] < df.loc[i, "Signal"]
+    )
+
+    # BUY
+    if position == 0:
+        if macd_cross_up and df.loc[i, "RSI"] < 40:
+            position = 1
+
+    # SELL
+    else:
+        if macd_cross_down or df.loc[i, "RSI"] > 70:
+            position = 0
+
+    positions.append(position)
+
+df["Position"] = positions
+
+# =====================================================
+# Daily Returns
+# =====================================================
+
+df["Market Return"] = close.pct_change()
+
+df["Strategy Return"] = (
+    df["Market Return"] *
+    df["Position"].shift(1)
+)
+
+df["Strategy Return"] = df["Strategy Return"].fillna(0)
+
+# =====================================================
+# Portfolio Value
+# =====================================================
+
+initial_capital = 100000
+
+df["Strategy Equity"] = (
+    1 + df["Strategy Return"]
+).cumprod() * initial_capital
+
+df["Buy Hold Equity"] = (
+    1 + df["Market Return"].fillna(0)
+).cumprod() * initial_capital
+
+# =====================================================
+# Performance Metrics
+# =====================================================
+
+strategy_returns = df["Strategy Return"]
+
+strategy_return = (
+    df["Strategy Equity"].iloc[-1] /
+    initial_capital - 1
+) * 100
+
+buy_hold_return = (
+    df["Buy Hold Equity"].iloc[-1] /
+    initial_capital - 1
+) * 100
+
+years = (
+    (df["Date"].iloc[-1] -
+     df["Date"].iloc[0]).days
+) / 365.25
+
+cagr = (
+    (df["Strategy Equity"].iloc[-1] /
+     initial_capital) ** (1 / years) - 1
+) * 100
+
+annual_volatility = (
+    strategy_returns.std() *
+    np.sqrt(252)
+) * 100
+
+sharpe = (
+    strategy_returns.mean() /
+    strategy_returns.std()
+) * np.sqrt(252)
+
+rolling_max = df["Strategy Equity"].cummax()
+
+drawdown = (
+    df["Strategy Equity"] -
+    rolling_max
+) / rolling_max
+
+max_drawdown = drawdown.min() * 100
+
+# =====================================================
+# Count Trades
+# =====================================================
+
+trade_changes = df["Position"].diff()
+
+buy_signals = (trade_changes == 1).sum()
+sell_signals = (trade_changes == -1).sum()
+
+# =====================================================
+# Results
+# =====================================================
+
+print("=" * 60)
+print("MACD + RSI Trading Strategy")
+print("=" * 60)
+
+print(f"Initial Capital        : ₹{initial_capital:,.2f}")
+print(f"Final Portfolio Value  : ₹{df['Strategy Equity'].iloc[-1]:,.2f}")
+
+print("-" * 60)
+
+print(f"Strategy Return        : {strategy_return:.2f}%")
+print(f"Buy & Hold Return      : {buy_hold_return:.2f}%")
+
+print("-" * 60)
+
+print(f"CAGR                   : {cagr:.2f}%")
+print(f"Annual Volatility      : {annual_volatility:.2f}%")
+print(f"Sharpe Ratio           : {sharpe:.2f}")
+print(f"Maximum Drawdown       : {max_drawdown:.2f}%")
+
+print("-" * 60)
+
+print(f"Buy Signals            : {buy_signals}")
+print(f"Sell Signals           : {sell_signals}")
+
+print("=" * 60)
+
+# =====================================================
+# Plot Portfolio
+# =====================================================
+
+plt.figure(figsize=(14,7))
+
+plt.plot(
+    df["Date"],
+    df["Strategy Equity"],
+    label="MACD + RSI Strategy",
+    linewidth=2
+)
+
+plt.plot(
+    df["Date"],
+    df["Buy Hold Equity"],
+    label="Buy & Hold",
+    linewidth=2
+)
+
+plt.title("MACD + RSI Strategy vs Buy & Hold")
+
+plt.xlabel("Date")
+
+plt.ylabel("Portfolio Value (₹)")
+
+plt.grid(True)
+
+plt.legend()
+
+plt.show()
